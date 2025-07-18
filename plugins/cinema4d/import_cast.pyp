@@ -171,7 +171,7 @@ def importMaterialNode(context, path, material):
     doc = c4d.documents.GetActiveDocument()
     docMaterials = doc.GetMaterials()
     contextMaterials = context.GetMaterials()
-    for mat in docMaterials + contextMaterials:
+    for mat in contextMaterials:
         if mat.GetName() == material.Name():
             return mat
 
