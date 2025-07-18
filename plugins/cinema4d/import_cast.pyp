@@ -660,6 +660,17 @@ def ReadNormalTag(tag: c4d.NormalTag) -> list[c4d.Vector]:
                        data[i-1] / 32000.0)
             for i in range(3, len(data) + 3, 3)]
 
+def flatten_and_pad(list_of_lists, N):
+    """
+    Pads and flattens the list using a nested list comprehension. 
+    """
+    # For each sublist, pad it with N zeros, then take the first N elements.
+    # Then, iterate through that new sublist to flatten it.
+    return [
+        item for sublist in list_of_lists
+        for item in (sublist + [0] * N)[:N]
+    ]
+
 def export_mesh_node(poly_obj, cast_model, bone_map, doc):
     """Exports a PolygonObject to a cast.Mesh node, handling vertex splitting."""
     if not isinstance(poly_obj, c4d.PolygonObject):
@@ -695,6 +706,7 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
     # Data for the new, split-vertex mesh
     vertex_map = {}
     out_verts, out_uvs, out_normals, out_colors, out_faces = [], [], [], [], []
+    bone_indices, bone_weights = [], []
     out_bone_indices, out_bone_weights = [], []
     max_influence = 0
     point_idx_counter = 0
@@ -707,12 +719,13 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
         indices = [poly.a, poly.b, poly.c]
         
         # C4D stores UVs per-polygon-vertex. We need to map this to a per-vertex format.
-        uv_poly_data = uv_tag.GetSlow(poly_idx) if uv_tag else None
-		
-
+        uv_poly_data = uv_tag.GetSlow(poly_idx) if uv_tag else None		
+        
         for i in range(3):
             p_idx = indices[i]
             pos = points[p_idx]
+
+            bone_i, bone_w = [], []
             
             uv = (0,0)
             if i == 0:
@@ -758,22 +771,24 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
                             c4d_joint = weight_tag.GetJoint(j)                    
                             if c4d_joint.GetName() in bone_map:                                
                                 bone_index = bone_map[c4d_joint.GetName()]["index"]
-                                out_bone_indices.append(bone_index)
-                                out_bone_weights.append(weight)
-                                num_influences += 1
-
-                    for x in range(4 - num_influences):
-                        out_bone_indices.append(0)
-                        out_bone_weights.append(0)
+                                bone_i.append(bone_index)
+                                bone_w.append(weight)
+                                num_influences += 1                         
                     
                     if num_influences > max_influence:
                         max_influence = num_influences
 
-
                 point_idx_counter += 1
+
+            bone_indices.append(bone_i)
+            bone_weights.append(bone_w)
 
         # Adjust winding order for cast format (based on importer)
         out_faces.extend([new_face[2], new_face[1], new_face[0]])
+
+    # Pad to max_influence
+    out_bone_indices = flatten_and_pad(bone_indices, max_influence)
+    out_bone_weights = flatten_and_pad(bone_weights, max_influence)
 
     # Set mesh data
     mesh.SetVertexPositionBuffer(out_verts)
@@ -797,22 +812,19 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
         mat_node = export_material_node(c4d_mat, cast_model)
         mesh.SetMaterial(mat_node.Hash())
 
-    # Set skinning data
-    print("bone_map")
-    print(bone_map)
-    print("max_influence")
-    print(max_influence)
+    # Set skinning data   
+    print("max_influence: " + str(max_influence))  
     if weight_tag and bone_map and max_influence > 0:
         mesh.SetMaximumWeightInfluence(max_influence)
-        mesh.SetSkinningMethod("linear") # or "quaternion"
-        # The cast format expects separate, padded buffers. This part is complex and simplified here.
-        # A full implementation would need to pad the weight/bone buffers to max_influence for each vertex.
-        # This simplified version just writes all found weights.
-        if out_bone_indices:
-             print("out_bone_indices")
-             print(out_bone_indices)
-             print("out_bone_weights")
-             print(out_bone_weights)
+        mesh.SetSkinningMethod("linear") 
+
+        skinObj = None
+        for ch in poly_obj.GetChildren():
+            if ch.IsInstanceOf(c4d.Oskin):                                             
+                if ch[c4d.ID_CA_SKIN_OBJECT_TYPE] == c4d.ID_CA_SKIN_OBJECT_TYPE_QUAT:
+                    mesh.SetSkinningMethod("quaternion")
+      
+        if out_bone_indices:            
              mesh.SetVertexWeightBoneBuffer(out_bone_indices)
              mesh.SetVertexWeightValueBuffer(out_bone_weights)
     
@@ -822,7 +834,6 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
 def export_skeleton_node(skel_root, cast_model):
     """Exports a C4D joint hierarchy to a cast.Skeleton node."""
     if not skel_root:
-        print("not skel_root")
         return None, None
         
     skeleton = cast_model.CreateSkeleton()
@@ -850,7 +861,7 @@ def export_skeleton_node(skel_root, cast_model):
         bone = skeleton.CreateBone()
         bone.SetName(c4d_bone.GetName())
         bone_list.append(bone)      
-        bone_map[c4d_bone.GetName()] = {"node": bone, "index": i}
+        bone_map[c4d_bone.GetName()] = {"node": bone, "index": i} #TODO: change dict key to joint object?
 
     # Second pass: set properties and hierarchy
     for i, c4d_bone in enumerate(bones_to_export):
@@ -930,8 +941,7 @@ def exportCast(doc, path):
         # Create a temporary null to parent the selection
         export_root = BaseObject(c4d.Onull)
         export_root.SetName(os.path.splitext(os.path.basename(path))[0])
-        for obj in selected_objs:            
-            #obj.InsertUnder(export_root)
+        for obj in selected_objs:          
             obj.GetClone(c4d.COPYFLAGS_0).InsertUnder(export_root)
     
     cast = Cast()
