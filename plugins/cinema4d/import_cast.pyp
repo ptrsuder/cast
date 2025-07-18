@@ -112,6 +112,7 @@ def utilityCreateDefaultMaterial(path, material):
 
     # Loop and connect the slots
     slots = material.Slots()
+
     for slot in slots:
         connection = slots[slot]
         if not connection.__class__ is File:
@@ -139,11 +140,24 @@ def utilityCreateDefaultMaterial(path, material):
             mat[c4d.MATERIAL_COLOR_COLOR] = Vector(rgba[0], rgba[1], rgba[2])
         else:
             continue
+
         if slot == "normal":
             mat[c4d.MATERIAL_USE_NORMAL] = True
         elif slot in ["gloss", "roughness"]:
             # Using it to add a roughness texture, so the user convert the material to the prefered render engine
-            mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_DISTRIBUTION] = GGX 
+            mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_DISTRIBUTION] = c4d.REFLECTION_DISTRIBUTION_GGX
+            #default values:
+            mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_VALUE_ROUGHNESS] = 0.1
+            mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_VALUE_REFLECTION] = 1.0
+            mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_VALUE_SPECULAR] = 0.2
+
+            #example of setting reflection layer values from custom cast property
+            if slot == "roughness":
+                hashR = material.properties[slot].values[0] #hash of roughness property
+                find = [x for x in material.childNodes if x.hash == hashR] #roughness node
+                if find[0].properties["v"]:
+                    rv = find[0].properties["v"].values[0] #roughness strength value from custom property
+                    mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_VALUE_ROUGHNESS] = float(rv) * 0.01
         elif slot == "emissive":
             mat[c4d.MATERIAL_USE_LUMINANCE] = True
 
@@ -260,7 +274,7 @@ def importModelNode(doc, node, model, path):
             vnData = vnTag.GetDataAddressW()
 
             for i in range(0, faceIndicesCount, 3):
-                vnTag.Set(vnData, int(i / 3), 
+                vnTag.Set(vnData, int(i / 3),
                          {"a": Vector(vertexNormals[faces[i] * 3],
                                        vertexNormals[(faces[i] * 3) + 1],
                                        -vertexNormals[(faces[i] * 3) + 2]),
@@ -444,7 +458,7 @@ def importSkeletonIKNode(skeleton, bones):
             poleBone = bones[poleBone.Name()]
             xpressoTag = c4d.BaseTag(c4d.Texpresso)
             startBone.InsertTag(xpressoTag)
-            
+
             gvNodeMaster = xpressoTag.GetNodeMaster()
             poleNode = gvNodeMaster.CreateNode(parent = gvNodeMaster.GetRoot(),
                                     id = c4d.ID_OPERATOR_OBJECT,
@@ -452,7 +466,7 @@ def importSkeletonIKNode(skeleton, bones):
                                     y = 200 )
             poleNode[c4d.GV_OBJECT_OBJECT_ID] = poleBone
             poleRotYPort = poleNode.AddPort(c4d.GV_PORT_OUTPUT, [c4d.ID_BASEOBJECT_REL_ROTATION, c4d.VECTOR_Y])
-            
+
             twistNode = gvNodeMaster.CreateNode(parent = gvNodeMaster.GetRoot(),
                                     id = c4d.ID_OPERATOR_OBJECT,
                                     x = 400,
@@ -609,35 +623,38 @@ def export_material_node(c4d_mat, cast_model):
         c4d.MATERIAL_NORMAL_SHADER: "normal",
         c4d.MATERIAL_LUMINANCE_SHADER: "emissive",
     }
-    
+
     for channel, slot_name in switcher.items():
         if c4d_mat[channel] and c4d_mat[channel].GetType() == c4d.Xbitmap:
             shader = c4d_mat[channel]
             path = shader[c4d.BITMAPSHADER_FILENAME]
             if path:
-                file_node = cast_model.CreateFile()
+                file_node = mat.CreateFile()
                 file_node.SetPath(path)
                 mat.SetSlot(slot_name, file_node.Hash())
 
     # Handle PBR reflection channels (simplified)
     if c4d_mat.GetReflectionLayerIndex(0):
-        reflLayer = c4d_mat.GetReflectionLayerIndex(0)
-        # Specular Color
-        if reflLayer.GetData(c4d.REFLECTION_LAYER_COLOR_TEXTURE) and reflLayer.GetData(c4d.REFLECTION_LAYER_COLOR_TEXTURE).GetType() == c4d.Xbitmap:
-            shader = reflLayer.GetData(c4d.REFLECTION_LAYER_COLOR_TEXTURE)
-            path = shader[c4d.BITMAPSHADER_FILENAME]
+        reflLayer = c4d_mat.GetReflectionLayerIndex(0)       
+        mat.Type = "pbr"
+        #Specular Color
+        spec = c4d_mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_COLOR_TEXTURE]
+        if spec and spec.GetType() == c4d.Xbitmap:
+            path = spec[c4d.BITMAPSHADER_FILENAME]            
             if path:
-                file_node = cast_model.CreateFile()
+                file_node = mat.CreateFile()
                 file_node.SetPath(path)
                 mat.SetSlot("specular", file_node.Hash())
         # Roughness
-        if reflLayer.GetData(c4d.REFLECTION_LAYER_MAIN_SHADER_ROUGHNESS) and reflLayer.GetData(c4d.REFLECTION_LAYER_MAIN_SHADER_ROUGHNESS).GetType() == c4d.Xbitmap:
-            shader = reflLayer.GetData(c4d.REFLECTION_LAYER_MAIN_SHADER_ROUGHNESS)
-            path = shader[c4d.BITMAPSHADER_FILENAME]
+        rough = c4d_mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_COLOR_TEXTURE]
+        if rough and rough.GetType() == c4d.Xbitmap:
+            path = rough[c4d.BITMAPSHADER_FILENAME]
             if path:
-                file_node = cast_model.CreateFile()
+                file_node = mat.CreateFile()
                 file_node.SetPath(path)
                 mat.SetSlot("roughness", file_node.Hash())
+                #adding custom property
+                mat.Slots()["roughness"].CreateProperty("v", "b").values = bytes([int(c4d_mat[reflLayer.GetDataID() + c4d.REFLECTION_LAYER_MAIN_VALUE_ROUGHNESS] * 100) % 256])
 
     return mat
 
@@ -662,7 +679,7 @@ def ReadNormalTag(tag: c4d.NormalTag) -> list[c4d.Vector]:
 
 def flatten_and_pad(list_of_lists, N):
     """
-    Pads and flattens the list using a nested list comprehension. 
+    Pads and flattens the list using a nested list comprehension.
     """
     # For each sublist, pad it with N zeros, then take the first N elements.
     # Then, iterate through that new sublist to flatten it.
@@ -687,10 +704,10 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
     if not res:
         print(f"Warning: Could not triangulate mesh {poly_obj.GetName()}")
         # Proceed with the original clone
-    
+
     points = clone.GetAllPoints()
     polys = clone.GetAllPolygons()
-    
+
     if not polys:
         return None # Skip empty meshes
 
@@ -702,7 +719,7 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
     normal_tag = clone.GetTag(c4d.Tnormal)
     vc_tag = clone.GetTag(c4d.Tvertexcolor)
     weight_tag = poly_obj.GetTag(c4d.Tweights) # Use original object for weights
-    
+
     # Data for the new, split-vertex mesh
     vertex_map = {}
     out_verts, out_uvs, out_normals, out_colors, out_faces = [], [], [], [], []
@@ -710,30 +727,30 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
     out_bone_indices, out_bone_weights = [], []
     max_influence = 0
     point_idx_counter = 0
-	
+
     normals = ReadNormalTag(normal_tag)
 
     # Process faces and split vertices
     for poly_idx, poly in enumerate(polys):
         new_face = []
         indices = [poly.a, poly.b, poly.c]
-        
+
         # C4D stores UVs per-polygon-vertex. We need to map this to a per-vertex format.
-        uv_poly_data = uv_tag.GetSlow(poly_idx) if uv_tag else None		
-        
+        uv_poly_data = uv_tag.GetSlow(poly_idx) if uv_tag else None
+
         for i in range(3):
             p_idx = indices[i]
             pos = points[p_idx]
 
             bone_i, bone_w = [], []
-            
+
             uv = (0,0)
             if i == 0:
-                uv = (uv_poly_data['a'].x, uv_poly_data['a'].y) if uv_poly_data else (0.0, 0.0) 
+                uv = (uv_poly_data['a'].x, uv_poly_data['a'].y) if uv_poly_data else (0.0, 0.0)
             elif i == 1:
                 uv = (uv_poly_data['b'].x, uv_poly_data['b'].y) if uv_poly_data else (0.0, 0.0)
             elif i == 2:
-                uv = (uv_poly_data['c'].x, uv_poly_data['c'].y) if uv_poly_data else (0.0, 0.0)          
+                uv = (uv_poly_data['c'].x, uv_poly_data['c'].y) if uv_poly_data else (0.0, 0.0)
 
             norm = c4d.Vector(0,1,0)
             if normal_tag:
@@ -755,26 +772,26 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
                 new_idx = point_idx_counter
                 vertex_map[vertex_key] = new_idx
                 new_face.append(new_idx)
-                
+
                 out_verts.append(c4d_pos_to_cast_pos(pos))
                 out_uvs.append(uv)
                 out_normals.append(c4d_pos_to_cast_pos(norm))
                 out_colors.append(CastColor.toInteger(color))
-                
-                # Copy skin weights from original vertex                
+
+                # Copy skin weights from original vertex
                 if weight_tag and bone_map:
                     joint_count = weight_tag.GetJointCount()
                     num_influences = 0
                     for j in range(joint_count):
                         weight = weight_tag.GetWeight(j, p_idx)
                         if weight > 0.001:
-                            c4d_joint = weight_tag.GetJoint(j)                    
-                            if c4d_joint.GetName() in bone_map:                                
+                            c4d_joint = weight_tag.GetJoint(j)
+                            if c4d_joint.GetName() in bone_map:
                                 bone_index = bone_map[c4d_joint.GetName()]["index"]
                                 bone_i.append(bone_index)
                                 bone_w.append(weight)
-                                num_influences += 1                         
-                    
+                                num_influences += 1
+
                     if num_influences > max_influence:
                         max_influence = num_influences
 
@@ -812,22 +829,22 @@ def export_mesh_node(poly_obj, cast_model, bone_map, doc):
         mat_node = export_material_node(c4d_mat, cast_model)
         mesh.SetMaterial(mat_node.Hash())
 
-    # Set skinning data   
-    print("max_influence: " + str(max_influence))  
+    # Set skinning data
+    #print("max_influence: " + str(max_influence))
     if weight_tag and bone_map and max_influence > 0:
         mesh.SetMaximumWeightInfluence(max_influence)
-        mesh.SetSkinningMethod("linear") 
+        mesh.SetSkinningMethod("linear")
 
         skinObj = None
         for ch in poly_obj.GetChildren():
-            if ch.IsInstanceOf(c4d.Oskin):                                             
+            if ch.IsInstanceOf(c4d.Oskin):
                 if ch[c4d.ID_CA_SKIN_OBJECT_TYPE] == c4d.ID_CA_SKIN_OBJECT_TYPE_QUAT:
                     mesh.SetSkinningMethod("quaternion")
-      
-        if out_bone_indices:            
+
+        if out_bone_indices:
              mesh.SetVertexWeightBoneBuffer(out_bone_indices)
              mesh.SetVertexWeightValueBuffer(out_bone_weights)
-    
+
     return mesh
 
 
@@ -835,24 +852,24 @@ def export_skeleton_node(skel_root, cast_model):
     """Exports a C4D joint hierarchy to a cast.Skeleton node."""
     if not skel_root:
         return None, None
-        
+
     skeleton = cast_model.CreateSkeleton()
-    
+
     bones_to_export = []
     # Traverse hierarchy to find all joints
     obj_stack = [skel_root]
     while obj_stack:
         obj = obj_stack.pop(0)
         if obj.IsInstanceOf(c4d.Ojoint):
-            bones_to_export.append(obj)            
+            bones_to_export.append(obj)
         obj_stack.extend(obj.GetChildren())
 
     if not bones_to_export:
         # No joints found, remove skeleton node
         cast_model.childNodes.remove(skeleton)
         return None, None
-    
-        
+
+
     bone_list = []
     bone_map = {} # map c4d object -> { "node": cast_node, "index": i }
 
@@ -860,20 +877,20 @@ def export_skeleton_node(skel_root, cast_model):
     for i, c4d_bone in enumerate(bones_to_export):
         bone = skeleton.CreateBone()
         bone.SetName(c4d_bone.GetName())
-        bone_list.append(bone)      
-        bone_map[c4d_bone.GetName()] = {"node": bone, "index": i} #TODO: change dict key to joint object?
+        bone_list.append(bone)
+        bone_map[c4d_bone.GetName()] = {"node": bone, "index": i} #TODO: change dict key to unique
 
     # Second pass: set properties and hierarchy
     for i, c4d_bone in enumerate(bones_to_export):
         bone = bone_list[i]
-        
+
         # Set Parent
         parent = c4d_bone.GetUp()
         parent_index = -1
         if parent and parent.GetName() in bone_map:
             parent_index = bone_map[parent.GetName()]["index"]
         bone.SetParentIndex(parent_index)
-        
+
         # Set Transforms
         pos = c4d_bone.GetRelPos()
         rot = c4d_bone.GetRelRot() # HPB
@@ -896,7 +913,7 @@ def export_model_node(doc, obj, cast_root):
     """Exports a C4D object and its hierarchy as a cast.Model."""
     model = cast_root.CreateModel()
     model.SetName(obj.GetName())
-    
+
     # Export skeleton first to get the bone_map
     # We assume the first child is the skeleton root if it's a joint
     skel_root = None
@@ -904,8 +921,7 @@ def export_model_node(doc, obj, cast_root):
         if ch.IsInstanceOf(c4d.Ojoint):
             skel_root = ch
             break
-    print("skel_root:")
-    print(skel_root)
+
     skeleton, bone_map = export_skeleton_node(skel_root, model)
 
     # Find and export all mesh objects in the hierarchy
@@ -914,7 +930,7 @@ def export_model_node(doc, obj, cast_root):
         current_obj = obj_stack.pop(0)
         if current_obj.IsInstanceOf(c4d.Opolygon):
             export_mesh_node(current_obj, model, bone_map, doc)
-        
+
         obj_stack.extend(current_obj.GetChildren())
 
     # Export metadata (simplified)
@@ -928,12 +944,12 @@ def export_model_node(doc, obj, cast_root):
 
 def exportCast(doc, path):
     """Main export function."""
-    
+
     selected_objs = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_SELECTIONORDER)
     if not selected_objs:
         gui.MessageDialog("Please select objects to export.")
         return False
-        
+
     export_root = None
     if len(selected_objs) == 1 and selected_objs[0].IsInstanceOf(c4d.Onull):
         export_root = selected_objs[0]
@@ -941,9 +957,9 @@ def exportCast(doc, path):
         # Create a temporary null to parent the selection
         export_root = BaseObject(c4d.Onull)
         export_root.SetName(os.path.splitext(os.path.basename(path))[0])
-        for obj in selected_objs:          
+        for obj in selected_objs:
             obj.GetClone(c4d.COPYFLAGS_0).InsertUnder(export_root)
-    
+
     cast = Cast()
     root = cast.CreateRoot()
 
